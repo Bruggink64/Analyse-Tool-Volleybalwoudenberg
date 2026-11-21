@@ -17,6 +17,7 @@ import {
   DEFAULT_MATCH_CONFIG,
   extractYouTubeVideoId,
   MatchConfig,
+  migrateLegacyZone,
   parseTimestampToSeconds,
 } from './types/scouting';
 
@@ -29,14 +30,26 @@ function storageKeyFor(config: MatchConfig): string {
 
 async function readNdjsonResult<T extends Record<string, unknown>>(
   response: Response
-): Promise<{ ok: true; data: T } | { ok: false; error: string }> {
+): Promise<
+  | { ok: true; data: T }
+  | { ok: false; error: string; code?: string; retryAfterSeconds?: number }
+> {
   const contentType = (response.headers.get('content-type') || '').toLowerCase();
 
   if (!response.ok) {
     if (contentType.includes('application/json')) {
       try {
-        const errJson = (await response.json()) as { error?: string };
-        return { ok: false, error: errJson.error || `Serverfout (${response.status})` };
+        const errJson = (await response.json()) as {
+          error?: string;
+          code?: string;
+          retryAfterSeconds?: number;
+        };
+        return {
+          ok: false,
+          code: errJson.code,
+          retryAfterSeconds: errJson.retryAfterSeconds,
+          error: errJson.error || `Serverfout (${response.status})`,
+        };
       } catch {
         return { ok: false, error: `Serverfout (${response.status})` };
       }
@@ -45,23 +58,32 @@ async function readNdjsonResult<T extends Record<string, unknown>>(
       ok: false,
       error:
         response.status === 504 || response.status === 502
-          ? 'De server reageerde te traag voor dit fragment (gateway-timeout). Probeer dit blok opnieuw of kies 1 FPS.'
+          ? 'De server reageerde te traag voor dit fragment (gateway-timeout). Probeer dit blok opnieuw of kies Turbo.'
           : `Onverwachte serverreactie (${response.status}). Probeer het opnieuw.`,
     };
   }
 
-  // Standard JSON fallback
   if (contentType.includes('application/json')) {
     try {
-      const json = (await response.json()) as T & { error?: string };
-      if (json.error) return { ok: false, error: json.error };
+      const json = (await response.json()) as T & {
+        error?: string;
+        code?: string;
+        retryAfterSeconds?: number;
+      };
+      if (json.error) {
+        return {
+          ok: false,
+          code: json.code,
+          retryAfterSeconds: json.retryAfterSeconds,
+          error: json.error,
+        };
+      }
       return { ok: true, data: json };
     } catch {
       return { ok: false, error: 'Ongeldig JSON-antwoord ontvangen van de server.' };
     }
   }
 
-  // NDJSON keep-alive stream
   if (!response.body) {
     return { ok: false, error: 'Leeg antwoord ontvangen van de server.' };
   }
@@ -71,6 +93,8 @@ async function readNdjsonResult<T extends Record<string, unknown>>(
   let buffer = '';
   let finalResult: T | null = null;
   let streamError: string | null = null;
+  let streamCode: string | undefined;
+  let streamRetryAfter: number | undefined;
 
   const processLine = (line: string) => {
     const trimmed = line.trim();
@@ -84,9 +108,14 @@ async function readNdjsonResult<T extends Record<string, unknown>>(
           typeof msg.error === 'string'
             ? msg.error
             : 'Fout tijdens video-analyse.';
+        streamCode = typeof msg.code === 'string' ? msg.code : undefined;
+        streamRetryAfter =
+          typeof msg.retryAfterSeconds === 'number'
+            ? msg.retryAfterSeconds
+            : undefined;
       }
     } catch {
-      // ignore malformed partial/html noise unless no result arrives
+      // ignore non-JSON noise
     }
   };
 
@@ -105,7 +134,12 @@ async function readNdjsonResult<T extends Record<string, unknown>>(
   }
 
   if (streamError) {
-    return { ok: false, error: streamError };
+    return {
+      ok: false,
+      code: streamCode,
+      retryAfterSeconds: streamRetryAfter,
+      error: streamError,
+    };
   }
   if (finalResult) {
     return { ok: true, data: finalResult };
@@ -114,6 +148,24 @@ async function readNdjsonResult<T extends Record<string, unknown>>(
     ok: false,
     error: 'De verbinding werd verbroken voordat de analyse klaar was. Probeer dit blok opnieuw.',
   };
+}
+
+function sleepWithAbort(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      window.clearTimeout(timer);
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 export default function App() {
@@ -139,6 +191,7 @@ export default function App() {
   const [activeAttackId, setActiveAttackId] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
+  const [isBatchAuditing, setIsBatchAuditing] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
   const [copiedFeedback, setCopiedFeedback] = useState(false);
@@ -161,7 +214,12 @@ export default function App() {
           chunks?: AnalysisChunk[];
         };
         if (Array.isArray(parsed.attacks)) {
-          setAttacks(parsed.attacks);
+          setAttacks(
+            parsed.attacks.map((a) => ({
+              ...a,
+              positionZone: migrateLegacyZone(String(a.positionZone)),
+            }))
+          );
         } else {
           setAttacks([]);
         }
@@ -205,7 +263,7 @@ export default function App() {
     async (
       chunk: AnalysisChunk,
       signal: AbortSignal
-    ): Promise<{ ok: boolean; error?: string }> => {
+    ): Promise<{ ok: boolean; error?: string; code?: string; retryAfterSeconds?: number }> => {
       setChunks((prev) =>
         prev.map((c) =>
           c.index === chunk.index
@@ -226,6 +284,7 @@ export default function App() {
             teamDescription: config.teamDescription,
             fps: config.fps,
             speedMode: config.speedMode,
+            debugMode: config.debugMode,
           }),
         });
 
@@ -242,11 +301,17 @@ export default function App() {
                 : c
             )
           );
-          return { ok: false, error: parsed.error };
+          return {
+            ok: false,
+            error: parsed.error,
+            code: parsed.code,
+            retryAfterSeconds: parsed.retryAfterSeconds,
+          };
         }
 
         const incoming = (parsed.data.attacks ?? []).map((a) => ({
           ...a,
+          positionZone: migrateLegacyZone(String(a.positionZone)),
           chunkIndex: chunk.index,
         }));
 
@@ -303,7 +368,7 @@ export default function App() {
         return { ok: false, error: msg };
       }
     },
-    [config.youtubeUrl, config.teamDescription, config.fps, config.speedMode]
+    [config.youtubeUrl, config.teamDescription, config.fps, config.speedMode, config.debugMode]
   );
 
   const handleStopAnalysis = useCallback(() => {
@@ -346,37 +411,110 @@ export default function App() {
 
     const pendingChunks = chunks.filter((c) => c.status !== 'done');
     const queue = [...(pendingChunks.length > 0 ? pendingChunks : chunks)];
-    const concurrency =
-      config.speedMode === 'turbo' || config.fps === 1 ? 4 : 3;
+    // Use 1 steady worker for MEDIUM/HIGH resolution (2 FPS) to prevent 429 bursts; 2 staggered only in Turbo 1 FPS
+    const initialConcurrency =
+      config.speedMode === 'turbo' && config.fps === 1 ? 2 : 1;
 
     let fatalStop = false;
-    let cursor = 0;
+    let rateLimitedOnce = false;
+    let cooldownUntil = 0;
+    const retryMap = new Map<number, number>();
 
-    const worker = async () => {
+    const worker = async (workerIdx: number) => {
+      // Stagger 2nd worker by 2.5s to avoid simultaneous burst
+      if (workerIdx > 0) {
+        try {
+          await sleepWithAbort(2500 * workerIdx, controller.signal);
+        } catch {
+          return;
+        }
+      }
+
       while (!fatalStop && !controller.signal.aborted) {
-        const nextIdx = cursor;
-        cursor += 1;
-        if (nextIdx >= queue.length) break;
-        const chunk = queue[nextIdx];
-        const result = await analyzeChunkAt(chunk, controller.signal);
-        if (!result.ok && result.error !== 'ABORTED') {
-          setGlobalError(result.error ?? 'Onbekende fout tijdens video-analyse.');
-          if (
-            result.error &&
-            (result.error.includes('API-sleutel') ||
-              result.error.includes('publiek toegankelijk'))
-          ) {
-            fatalStop = true;
-            controller.abort();
-            break;
+        // If rate limit was hit, let only worker 0 finish remaining chunks calmly
+        if (rateLimitedOnce && workerIdx > 0) break;
+
+        if (Date.now() < cooldownUntil) {
+          const waitMs = cooldownUntil - Date.now();
+          setStatusNotice(
+            `Even pauze voor API-quotum (${Math.ceil(waitMs / 1000)}s)… analyse hervat daarna automatisch.`
+          );
+          try {
+            await sleepWithAbort(waitMs, controller.signal);
+          } catch {
+            return;
           }
+          setStatusNotice(null);
+        }
+
+        const chunk = queue.shift();
+        if (!chunk) break;
+
+        const result = await analyzeChunkAt(chunk, controller.signal);
+        if (result.ok) {
+          setGlobalError(null);
+          // Gentle 2.5s breather between chunks so RPM/TPM buckets stay smooth
+          if (queue.length > 0) {
+            try {
+              await sleepWithAbort(2500, controller.signal);
+            } catch {
+              return;
+            }
+          }
+          continue;
+        }
+        if (result.error === 'ABORTED') break;
+
+        if (result.code === 'DAILY_QUOTA') {
+          setGlobalError(
+            result.error ??
+              'Daglimiet bereikt op deze API-sleutel. Schakel naar Turbo of gebruik een betaalde API-sleutel via Settings > Secrets.'
+          );
+          fatalStop = true;
+          controller.abort();
+          break;
+        }
+
+        if (result.code === 'RATE_LIMIT') {
+          const retries = retryMap.get(chunk.index) ?? 0;
+          if (retries < 2) {
+            retryMap.set(chunk.index, retries + 1);
+            rateLimitedOnce = true;
+            const waitSec = result.retryAfterSeconds ?? 45;
+            cooldownUntil = Date.now() + waitSec * 1000;
+            setChunks((prev) =>
+              prev.map((c) =>
+                c.index === chunk.index
+                  ? {
+                      ...c,
+                      status: 'idle',
+                      errorMessage: `Wacht ${waitSec}s op minuut-quotum en herprobeert automatisch…`,
+                    }
+                  : c
+              )
+            );
+            queue.unshift(chunk);
+            continue;
+          }
+        }
+
+        setGlobalError(result.error ?? 'Onbekende fout tijdens video-analyse.');
+        if (
+          result.error &&
+          (result.error.includes('API-sleutel') ||
+            result.error.includes('publiek toegankelijk'))
+        ) {
+          fatalStop = true;
+          controller.abort();
+          break;
         }
       }
     };
 
-    const workerCount = Math.min(concurrency, queue.length);
-    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    const workerCount = Math.min(initialConcurrency, queue.length);
+    await Promise.all(Array.from({ length: workerCount }, (_, idx) => worker(idx)));
 
+    setStatusNotice(null);
     abortControllerRef.current = null;
     setIsAnalyzing(false);
   }, [chunks, isAnalyzing, config.speedMode, config.fps, analyzeChunkAt]);
@@ -438,6 +576,7 @@ export default function App() {
             currentZone: attack.positionZone,
             currentOutcome: attack.outcome,
             teamDescription: config.teamDescription,
+            debugMode: config.debugMode,
           }),
         });
         const parsed = await readNdjsonResult<{
@@ -448,6 +587,7 @@ export default function App() {
           outcome?: AttackEvent['outcome'];
           confidence?: AttackEvent['confidence'];
           note?: string;
+          debugCoordinates?: AttackEvent['debugCoordinates'];
         }>(res);
 
         if (!parsed.ok) {
@@ -459,7 +599,9 @@ export default function App() {
                 ? {
                     ...item,
                     confidence: 'Onzeker',
-                    note: `4 FPS hercheck: mogelijk geen aanval van doelteam — ${parsed.data.note || 'controleer handmatig'}`,
+                    debugCoordinates:
+                      parsed.data.debugCoordinates ?? item.debugCoordinates,
+                    note: `4 FPS hercheck: mogelijk geen aanval van zwart/geel team — ${parsed.data.note || 'controleer handmatig'}`,
                   }
                 : item
             )
@@ -482,6 +624,8 @@ export default function App() {
                       outcome: data.outcome ?? item.outcome,
                       confidence: data.confidence ?? item.confidence,
                       note: data.note || item.note,
+                      debugCoordinates:
+                        data.debugCoordinates ?? item.debugCoordinates,
                       source: 'geverifieerd' as const,
                     }
                   : item
@@ -502,8 +646,120 @@ export default function App() {
         setVerifyingId(null);
       }
     },
-    [verifyingId, isAnalyzing, config.youtubeUrl, config.teamDescription]
+    [verifyingId, isAnalyzing, config.youtubeUrl, config.teamDescription, config.debugMode]
   );
+
+  const handleAuditDirectPoints = useCallback(async () => {
+    if (isAnalyzing || verifyingId || isBatchAuditing) return;
+    const targets = attacks
+      .filter((a) => a.outcome === 'Direct punt' && a.source === 'ai')
+      .sort((a, b) => a.timestampSeconds - b.timestampSeconds);
+    if (targets.length === 0) return;
+
+    setIsBatchAuditing(true);
+    setGlobalError(null);
+    let correctedCount = 0;
+
+    try {
+      for (let i = 0; i < targets.length; i += 1) {
+        const target = targets[i];
+        setVerifyingId(target.id);
+        setStatusNotice(
+          `4 FPS blok-audit bezig: ${i + 1} van ${targets.length} (${target.timestamp})…`
+        );
+
+        const res = await fetch('/api/verify-moment', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            youtubeUrl: config.youtubeUrl,
+            timestampSeconds: target.timestampSeconds,
+            currentZone: target.positionZone,
+            currentOutcome: target.outcome,
+            teamDescription: config.teamDescription,
+            debugMode: config.debugMode,
+          }),
+        });
+
+        const parsed = await readNdjsonResult<{
+          isTargetTeamAttack?: boolean;
+          timestampSeconds?: number;
+          timestamp?: string;
+          positionZone?: AttackEvent['positionZone'];
+          outcome?: AttackEvent['outcome'];
+          confidence?: AttackEvent['confidence'];
+          note?: string;
+          debugCoordinates?: AttackEvent['debugCoordinates'];
+        }>(res);
+
+        if (!parsed.ok) {
+          setGlobalError(parsed.error);
+          break;
+        }
+
+        const data = parsed.data;
+        if (data.isTargetTeamAttack === false) {
+          correctedCount += 1;
+          setAttacks((prev) =>
+            prev.map((item) =>
+              item.id === target.id
+                ? {
+                    ...item,
+                    confidence: 'Onzeker',
+                    debugCoordinates: data.debugCoordinates ?? item.debugCoordinates,
+                    note: `4 FPS audit: mogelijk geen aanval van zwart/geel — ${data.note || 'controleer handmatig'}`,
+                  }
+                : item
+            )
+          );
+        } else {
+          if (data.outcome && data.outcome !== target.outcome) {
+            correctedCount += 1;
+          }
+          setAttacks((prev) =>
+            prev
+              .map((item) =>
+                item.id === target.id
+                  ? {
+                      ...item,
+                      timestampSeconds: data.timestampSeconds ?? item.timestampSeconds,
+                      timestamp: data.timestamp ?? item.timestamp,
+                      positionZone: data.positionZone ?? item.positionZone,
+                      outcome: data.outcome ?? item.outcome,
+                      confidence: data.confidence ?? item.confidence,
+                      note: data.note || item.note,
+                      debugCoordinates: data.debugCoordinates ?? item.debugCoordinates,
+                      source: 'geverifieerd' as const,
+                    }
+                  : item
+              )
+              .sort((a, b) => a.timestampSeconds - b.timestampSeconds)
+          );
+        }
+      }
+
+      setStatusNotice(
+        `4 FPS audit van ${targets.length} Direct punten afgerond (${correctedCount} ${correctedCount === 1 ? 'uitkomst aangepast' : 'uitkomsten aangepast'}).`
+      );
+    } catch (err: unknown) {
+      setGlobalError(
+        err instanceof Error
+          ? err.message
+          : 'Netwerkfout tijdens 4 FPS blok-audit.'
+      );
+    } finally {
+      setVerifyingId(null);
+      setIsBatchAuditing(false);
+    }
+  }, [
+    attacks,
+    isAnalyzing,
+    verifyingId,
+    isBatchAuditing,
+    config.youtubeUrl,
+    config.teamDescription,
+    config.debugMode,
+  ]);
 
   const handleClearAll = useCallback(() => {
     setAttacks([]);
@@ -563,7 +819,7 @@ export default function App() {
                 {config.startTime} – {config.endTime}
               </span>
               <span aria-hidden="true">·</span>
-              <span>Zwart/geel tenue (rug naar camera) + libero geel/zwart</span>
+              <span>Altijd focus op zwart/geel tenue + libero geel/zwart</span>
             </div>
             <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 [text-wrap:balance]">
               Aanvalsanalyse &amp; Video-scouting
@@ -620,10 +876,13 @@ export default function App() {
           activeAttackId={activeAttackId}
           isAnalyzing={isAnalyzing}
           verifyingId={verifyingId}
+          isBatchAuditing={isBatchAuditing}
+          debugMode={config.debugMode}
           onJumpToAttack={handleJumpToAttack}
           onUpdateAttack={handleUpdateAttack}
           onDeleteAttack={handleDeleteAttack}
           onVerifyAttack={handleVerifyAttack}
+          onAuditDirectPoints={handleAuditDirectPoints}
           onClearAll={handleClearAll}
           onCopyMarkdown={handleCopyMarkdown}
           onDownloadCsv={handleDownloadCsv}
@@ -637,6 +896,7 @@ export default function App() {
           chunks={chunks}
           verifyingId={verifyingId}
           isAnalyzing={isAnalyzing}
+          debugMode={config.debugMode}
           onJumpToAttack={handleJumpToAttack}
           onVerifyAttack={handleVerifyAttack}
         />

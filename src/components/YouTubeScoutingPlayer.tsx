@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import {
   AttackEvent,
+  formatOutcomeLabel,
   formatSecondsToMMSS,
 } from '../types/scouting';
 
@@ -256,6 +257,8 @@ export function YouTubeScoutingPlayer({
         return 'bg-red-600';
       case 'Geblokt':
         return 'bg-amber-600';
+      case 'Kill-blok mee':
+        return 'bg-sky-600';
       default:
         return 'bg-slate-500';
     }
@@ -340,7 +343,7 @@ export function YouTubeScoutingPlayer({
                 <button
                   key={attack.id}
                   type="button"
-                  title={`${attack.timestamp} · ${attack.positionZone} · ${attack.outcome}`}
+                  title={`${attack.timestamp} · ${attack.positionZone} · ${formatOutcomeLabel(attack.outcome)}`}
                   onClick={(e) => {
                     e.stopPropagation();
                     onSelectAttack(attack);

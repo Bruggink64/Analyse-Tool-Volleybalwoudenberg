@@ -11,6 +11,7 @@ import {
   RefreshCw,
   Search,
   ShieldAlert,
+  ShieldCheck,
   Trash2,
   X,
   XCircle,
@@ -23,6 +24,8 @@ import {
   AttackOutcome,
   AttackZone,
   ConfidenceLevel,
+  formatOutcomeLabel,
+  formatOutcomeOptionLabel,
   formatSecondsToMMSS,
   parseTimestampToSeconds,
 } from '../types/scouting';
@@ -32,10 +35,13 @@ interface AttackTableProps {
   activeAttackId: string | null;
   isAnalyzing: boolean;
   verifyingId: string | null;
+  isBatchAuditing: boolean;
+  debugMode: boolean;
   onJumpToAttack: (attack: AttackEvent) => void;
   onUpdateAttack: (id: string, patch: Partial<AttackEvent>) => void;
   onDeleteAttack: (id: string) => void;
   onVerifyAttack: (attack: AttackEvent) => void;
+  onAuditDirectPoints: () => void;
   onClearAll: () => void;
   onCopyMarkdown: () => void;
   onDownloadCsv: () => void;
@@ -63,7 +69,14 @@ function OutcomeDisplay({ outcome }: { outcome: AttackOutcome }) {
       return (
         <span className="inline-flex items-center gap-1.5 text-amber-700 font-semibold whitespace-nowrap">
           <ShieldAlert className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-          <span>Geblokt</span>
+          <span>Kill-blok tegen</span>
+        </span>
+      );
+    case 'Kill-blok mee':
+      return (
+        <span className="inline-flex items-center gap-1.5 text-sky-700 font-semibold whitespace-nowrap">
+          <ShieldCheck className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+          <span>Kill-blok mee</span>
         </span>
       );
     case 'Verdedigd/doorgespeeld':
@@ -81,10 +94,13 @@ export function AttackTable({
   activeAttackId,
   isAnalyzing,
   verifyingId,
+  isBatchAuditing,
+  debugMode,
   onJumpToAttack,
   onUpdateAttack,
   onDeleteAttack,
   onVerifyAttack,
+  onAuditDirectPoints,
   onClearAll,
   onCopyMarkdown,
   onDownloadCsv,
@@ -97,6 +113,7 @@ export function AttackTable({
   const [searchQuery, setSearchQuery] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [copiedDebugLog, setCopiedDebugLog] = useState(false);
 
   // Edit draft state
   const [editTime, setEditTime] = useState('');
@@ -149,6 +166,9 @@ export function AttackTable({
   };
 
   const uncertainTotal = attacks.filter((a) => a.confidence === 'Onzeker').length;
+  const unverifiedDirectCount = attacks.filter(
+    (a) => a.outcome === 'Direct punt' && a.source === 'ai'
+  ).length;
 
   return (
     <section id="aanvalstabel" className="bg-white border border-slate-200 rounded-xl overflow-hidden">
@@ -156,15 +176,35 @@ export function AttackTable({
       <div className="px-5 py-4 border-b border-slate-200 flex flex-wrap items-center justify-between gap-4">
         <div>
           <h2 className="text-base font-bold text-slate-900">
-            1. Aanvalstabel — Team met rug naar camera (zwart/geel)
+            1. Aanvalstabel — Zwart/geel team (libero geel/zwart)
           </h2>
           <p className="text-xs text-slate-500 mt-0.5 tabular-nums">
             {filteredAttacks.length} van {attacks.length} aanvallen zichtbaar
             {uncertainTotal > 0 ? ` · ${uncertainTotal} met onzeker balcontact` : ''}
+            {debugMode ? ' · Debug-coördinaten & uitkomstbewijs actief' : ''}
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2 no-print">
+          {unverifiedDirectCount > 0 && (
+            <button
+              type="button"
+              onClick={onAuditDirectPoints}
+              disabled={isAnalyzing || Boolean(verifyingId) || isBatchAuditing}
+              title="Controleer alle ongeverifieerde 'Direct punt'-rijen stuk voor stuk op 4 FPS om gemiste kill-blokken uit te sluiten"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-amber-900 bg-amber-50 hover:bg-amber-100 border border-amber-300 rounded-md transition-colors disabled:opacity-45 whitespace-nowrap cursor-pointer"
+            >
+              {isBatchAuditing ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-700" aria-hidden="true" />
+              ) : (
+                <RefreshCw className="w-3.5 h-3.5 text-amber-700" aria-hidden="true" />
+              )}
+              <span className="tabular-nums">
+                Check {unverifiedDirectCount} Direct {unverifiedDirectCount === 1 ? 'punt' : 'punten'} (4 FPS)
+              </span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={onCopyMarkdown}
@@ -243,7 +283,7 @@ export function AttackTable({
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              {option}
+              {option === 'Alle' ? 'Alle' : formatOutcomeLabel(option)}
             </button>
           ))}
         </div>
@@ -332,8 +372,11 @@ export function AttackTable({
               <tr className="border-b border-slate-200 bg-slate-50/50 text-slate-500 font-semibold">
                 <th className="py-2.5 px-4 w-12 text-right">#</th>
                 <th className="py-2.5 px-4 w-28">Tijdstip</th>
-                <th className="py-2.5 px-4 w-44">Positie/Zone</th>
-                <th className="py-2.5 px-4 w-48">Uitkomst</th>
+                <th className="py-2.5 px-4 w-48">Positie/Zone</th>
+                <th className="py-2.5 px-4 w-44">Uitkomst</th>
+                {debugMode && (
+                  <th className="py-2.5 px-4 w-56">Zone-coördinaten (debug)</th>
+                )}
                 <th className="py-2.5 px-4">Zekerheid &amp; toelichting</th>
                 <th className="py-2.5 px-4 w-44 text-right no-print">Acties</th>
               </tr>
@@ -341,7 +384,7 @@ export function AttackTable({
             <tbody className="divide-y divide-slate-100">
               {filteredAttacks.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-8 px-4 text-center text-slate-500">
+                  <td colSpan={debugMode ? 7 : 6} className="py-8 px-4 text-center text-slate-500">
                     Geen aanvallen gevonden voor de gekozen filters.
                   </td>
                 </tr>
@@ -414,7 +457,7 @@ export function AttackTable({
                           >
                             {ATTACK_OUTCOMES.map((o) => (
                               <option key={o} value={o}>
-                                {o}
+                                {formatOutcomeOptionLabel(o)}
                               </option>
                             ))}
                           </select>
@@ -422,6 +465,66 @@ export function AttackTable({
                           <OutcomeDisplay outcome={attack.outcome} />
                         )}
                       </td>
+
+                      {debugMode && (
+                        <td className="py-2.5 px-4 font-mono tabular-nums text-[11px] text-slate-600">
+                          {attack.debugCoordinates ? (
+                            <div className="space-y-0.5">
+                              <div className="text-slate-900 font-medium whitespace-nowrap">
+                                x:{attack.debugCoordinates.takeoffX.toFixed(2)} · y:
+                                {attack.debugCoordinates.takeoffY.toFixed(2)} ·{' '}
+                                {attack.debugCoordinates.behindThreeMeterLine
+                                  ? 'Achter 3m'
+                                  : 'Voor 3m'}
+                              </div>
+                              <div className="text-slate-500 whitespace-nowrap">
+                                {attack.debugCoordinates.courtSide === 'ver' ? 'Ver' : 'Nabij'}
+                                {attack.debugCoordinates.pointWinner
+                                  ? ` · punt: ${attack.debugCoordinates.pointWinner}`
+                                  : ''}
+                              </div>
+                              {(attack.debugCoordinates.celebratingTeam ||
+                                attack.debugCoordinates.nextServerTeam ||
+                                attack.debugCoordinates.blockContact) && (
+                                <div className="text-slate-500 text-[10px] leading-snug">
+                                  {attack.debugCoordinates.blockContact
+                                    ? `blok: ${attack.debugCoordinates.blockContact}`
+                                    : ''}
+                                  {attack.debugCoordinates.celebratingTeam
+                                    ? ` · juich: ${attack.debugCoordinates.celebratingTeam}`
+                                    : ''}
+                                  {attack.debugCoordinates.nextServerTeam
+                                    ? ` · serve: ${attack.debugCoordinates.nextServerTeam}`
+                                    : ''}
+                                  {attack.debugCoordinates.scoreboardCue &&
+                                  attack.debugCoordinates.scoreboardCue !== 'niet-leesbaar'
+                                    ? ` · sb: ${attack.debugCoordinates.scoreboardCue}`
+                                    : ''}
+                                </div>
+                              )}
+                              {attack.debugCoordinates.resolvedBy === 'coordinaten-correctie' && (
+                                <div className="text-amber-700 font-sans text-[11px]">
+                                  Zone gecorrigeerd uit: {attack.debugCoordinates.rawZoneLabel}
+                                </div>
+                              )}
+                              {attack.debugCoordinates.outcomeResolvedBy === 'uitkomst-correctie' && (
+                                <div className="text-amber-700 font-sans text-[11px] font-medium">
+                                  Uitkomst gecorrigeerd uit: {attack.debugCoordinates.rawOutcomeLabel}
+                                </div>
+                              )}
+                              {attack.debugCoordinates.reasoning && (
+                                <div className="text-slate-500 font-sans text-[11px] leading-snug">
+                                  {attack.debugCoordinates.reasoning}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-slate-400 font-sans">
+                              Geen coördinaten (handmatig of oudere scan)
+                            </span>
+                          )}
+                        </td>
+                      )}
 
                       <td className="py-2.5 px-4 text-slate-600">
                         {isEditing ? (
@@ -544,6 +647,64 @@ export function AttackTable({
               )}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Debug Coordinate Log Panel */}
+      {debugMode && sortedAttacks.some((a) => Boolean(a.debugCoordinates)) && (
+        <div className="border-t border-slate-200 bg-slate-50/70 px-5 py-4 space-y-2.5 no-print">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 className="text-xs font-semibold text-slate-900">
+                Debug-log — Gedetecteerde zone-coördinaten per aanval
+              </h3>
+              <p className="text-[11px] text-slate-500">
+                X = 0.00 (links) → 1.00 (rechts) · Y = 0.00 (net) → 0.33 (3m-lijn) → 1.00 (achterlijn) in eigen speelhelft van zwart/geel.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={async () => {
+                const lines = sortedAttacks
+                  .filter((a) => a.debugCoordinates)
+                  .map((a) => {
+                    const d = a.debugCoordinates!;
+                    return `${a.timestamp} | ${a.positionZone} | ${formatOutcomeLabel(a.outcome)} | x=${d.takeoffX.toFixed(2)}, y=${d.takeoffY.toFixed(2)} | 3m=${d.behindThreeMeterLine ? 'achter' : 'voor'} | veld=${d.courtSide} | blok=${d.blockContact ?? '-'} | juich=${d.celebratingTeam ?? '-'} | serve=${d.nextServerTeam ?? '-'} | sb=${d.scoreboardCue ?? '-'} | punt=${d.pointWinner ?? '-'} | zoneBron=${d.resolvedBy} | uitkomstBron=${d.outcomeResolvedBy ?? 'model'} | ${d.reasoning}`;
+                  })
+                  .join('\n');
+                try {
+                  await navigator.clipboard.writeText(lines);
+                  setCopiedDebugLog(true);
+                  window.setTimeout(() => setCopiedDebugLog(false), 2000);
+                } catch {
+                  // ignore clipboard block
+                }
+              }}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-slate-700 hover:text-slate-900 bg-white border border-slate-200 rounded-md cursor-pointer"
+            >
+              {copiedDebugLog ? (
+                <>
+                  <Check className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
+                  <span>Log gekopieerd</span>
+                </>
+              ) : (
+                <>
+                  <Copy className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Kopieer debug-log</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          <pre className="text-[11px] font-mono tabular-nums text-slate-700 bg-white border border-slate-200 rounded-lg p-3 overflow-x-auto max-h-48 leading-relaxed">
+            {sortedAttacks
+              .filter((a) => a.debugCoordinates)
+              .map((a) => {
+                const d = a.debugCoordinates!;
+                return `${a.timestamp} | ${a.positionZone.padEnd(32)} | ${formatOutcomeLabel(a.outcome).padEnd(22)} | x=${d.takeoffX.toFixed(2)} y=${d.takeoffY.toFixed(2)} | ${d.behindThreeMeterLine ? 'achter-3m' : 'voor-3m  '} | blok=${(d.blockContact ?? '-').padEnd(18)} | juich=${(d.celebratingTeam ?? '-').padEnd(12)} | serve=${(d.nextServerTeam ?? '-').padEnd(12)} | sb=${(d.scoreboardCue ?? '-').padEnd(15)} | punt=${d.pointWinner ?? '-'}`;
+              })
+              .join('\n')}
+          </pre>
         </div>
       )}
     </section>

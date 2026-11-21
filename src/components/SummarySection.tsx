@@ -1,10 +1,11 @@
-import { AlertTriangle, Play, RefreshCw, Loader2 } from 'lucide-react';
+import { AlertTriangle, Play, RefreshCw, Loader2, ShieldCheck, ShieldAlert } from 'lucide-react';
 import {
   AnalysisChunk,
   AttackEvent,
   computeAttackSummary,
   computeZoneBreakdown,
   formatDutchPercent,
+  formatOutcomeLabel,
   ZoneBreakdownRow,
 } from '../types/scouting';
 
@@ -13,15 +14,37 @@ interface SummarySectionProps {
   chunks: AnalysisChunk[];
   verifyingId: string | null;
   isAnalyzing: boolean;
+  debugMode: boolean;
   onJumpToAttack: (attack: AttackEvent) => void;
   onVerifyAttack: (attack: AttackEvent) => void;
 }
 
-function CourtZoneDiagram({ rows }: { rows: ZoneBreakdownRow[] }) {
+function CourtZoneDiagram({
+  rows,
+  attacks,
+  debugMode,
+}: {
+  rows: ZoneBreakdownRow[];
+  attacks: AttackEvent[];
+  debugMode: boolean;
+}) {
   const byZone = Object.fromEntries(rows.map((r) => [r.zone, r])) as Record<
     string,
     ZoneBreakdownRow
   >;
+
+  const emptyRow = (label: string): ZoneBreakdownRow => ({
+    zone: 'Overig / 2e bal',
+    shortLabel: label,
+    total: 0,
+    scores: 0,
+    errors: 0,
+    blocked: 0,
+    killBlocksFor: 0,
+    defended: 0,
+    scorePercentage: null,
+    attackEfficiency: null,
+  });
 
   const cellFill = (count: number) => {
     if (count === 0) return '#F8FAFC';
@@ -30,31 +53,30 @@ function CourtZoneDiagram({ rows }: { rows: ZoneBreakdownRow[] }) {
     return '#F59E0B';
   };
 
-  const cellText = (count: number) => (count > 8 ? '#0F172A' : '#0F172A');
-
-  const p4 = byZone['Buiten (Pos 4)'];
-  const p3 = byZone['Midden (Pos 3)'];
-  const p2 = byZone['Diagonaal (Pos 2)'];
-  const p6 = byZone['Pipe (Pos 6)'];
-  const p1 = byZone['Achterveld (Pos 1)'];
-  const other = byZone['Overig / 2e bal'];
+  const p4 = byZone['Buiten (Pos 4)'] ?? emptyRow('Buiten (P4)');
+  const p3 = byZone['Midden (Pos 3)'] ?? emptyRow('Midden (P3)');
+  const p2 = byZone['Diagonaal (Pos 2)'] ?? emptyRow('Diagonaal (P2)');
+  const p5 = byZone['Achterveld links / Pipe (Pos 5)'] ?? emptyRow('Pos 5 (Pipe)');
+  const p6 = byZone['Pipe midden (Pos 6)'] ?? emptyRow('Pipe (P6)');
+  const p1 = byZone['Achterveld rechts (Pos 1)'] ?? emptyRow('Pos 1');
+  const other = byZone['Overig / 2e bal'] ?? emptyRow('Overig / 2e bal');
 
   return (
-    <div className="flex flex-col justify-between">
+    <div className="flex flex-col justify-between w-full">
       <div className="mb-3">
         <h3 className="text-sm font-semibold text-slate-900">
-          Veldverdeling (gezien vanuit de camera)
+          Veldverdeling — Alle 6 posities (gezien vanuit camera)
         </h3>
         <p className="text-xs text-slate-500 mt-0.5">
-          Eigen speelhelft van zwart/geel met het net bovenaan en de camera achter de achterlijn.
+          Voorveld: Pos 4 · Pos 3 · Pos 2 — Achterveld (achter 3m-lijn): Pos 5 (Pipe) · Pos 6 (Pipe) · Pos 1.
         </p>
       </div>
 
       <svg
-        viewBox="0 0 360 270"
-        className="w-full max-w-[380px] h-auto border border-slate-200 rounded-lg bg-white"
+        viewBox="0 0 360 272"
+        className="w-full max-w-[390px] h-auto border border-slate-200 rounded-lg bg-white"
         role="img"
-        aria-label="Volleybalveld met aanvalsverdeling per zone"
+        aria-label="Volleybalveld met aanvalsverdeling op posities 1 tot en met 6"
       >
         {/* Net line at top */}
         <rect x="20" y="16" width="320" height="8" fill="#0F172A" rx="2" />
@@ -82,18 +104,11 @@ function CourtZoneDiagram({ rows }: { rows: ZoneBreakdownRow[] }) {
 
         {/* Front row zones (3m line at y=114) */}
         {/* Pos 4 - Buiten */}
-        <rect
-          x="21"
-          y="25"
-          width="106"
-          height="88"
-          fill={cellFill(p4.total)}
-          stroke="#E2E8F0"
-        />
-        <text x="74" y="54" textAnchor="middle" fontSize="11" fontWeight="700" fill={cellText(p4.total)}>
-          Buiten (P4)
+        <rect x="21" y="25" width="106" height="88" fill={cellFill(p4.total)} stroke="#E2E8F0" />
+        <text x="74" y="52" textAnchor="middle" fontSize="11" fontWeight="700" fill="#0F172A">
+          Pos 4 · Buiten
         </text>
-        <text x="74" y="76" textAnchor="middle" fontSize="18" fontWeight="700" fontFamily="JetBrains Mono, monospace" fill="#0F172A">
+        <text x="74" y="75" textAnchor="middle" fontSize="18" fontWeight="700" fontFamily="JetBrains Mono, monospace" fill="#0F172A">
           {p4.total}
         </text>
         <text x="74" y="95" textAnchor="middle" fontSize="10" fill="#475569" fontFamily="JetBrains Mono, monospace">
@@ -101,18 +116,11 @@ function CourtZoneDiagram({ rows }: { rows: ZoneBreakdownRow[] }) {
         </text>
 
         {/* Pos 3 - Midden */}
-        <rect
-          x="127"
-          y="25"
-          width="106"
-          height="88"
-          fill={cellFill(p3.total)}
-          stroke="#E2E8F0"
-        />
-        <text x="180" y="54" textAnchor="middle" fontSize="11" fontWeight="700" fill={cellText(p3.total)}>
-          Midden (P3)
+        <rect x="127" y="25" width="106" height="88" fill={cellFill(p3.total)} stroke="#E2E8F0" />
+        <text x="180" y="52" textAnchor="middle" fontSize="11" fontWeight="700" fill="#0F172A">
+          Pos 3 · Midden
         </text>
-        <text x="180" y="76" textAnchor="middle" fontSize="18" fontWeight="700" fontFamily="JetBrains Mono, monospace" fill="#0F172A">
+        <text x="180" y="75" textAnchor="middle" fontSize="18" fontWeight="700" fontFamily="JetBrains Mono, monospace" fill="#0F172A">
           {p3.total}
         </text>
         <text x="180" y="95" textAnchor="middle" fontSize="10" fill="#475569" fontFamily="JetBrains Mono, monospace">
@@ -120,18 +128,11 @@ function CourtZoneDiagram({ rows }: { rows: ZoneBreakdownRow[] }) {
         </text>
 
         {/* Pos 2 - Diagonaal */}
-        <rect
-          x="233"
-          y="25"
-          width="106"
-          height="88"
-          fill={cellFill(p2.total)}
-          stroke="#E2E8F0"
-        />
-        <text x="286" y="54" textAnchor="middle" fontSize="11" fontWeight="700" fill={cellText(p2.total)}>
-          Diagonaal (P2)
+        <rect x="233" y="25" width="106" height="88" fill={cellFill(p2.total)} stroke="#E2E8F0" />
+        <text x="286" y="52" textAnchor="middle" fontSize="11" fontWeight="700" fill="#0F172A">
+          Pos 2 · Diagonaal
         </text>
-        <text x="286" y="76" textAnchor="middle" fontSize="18" fontWeight="700" fontFamily="JetBrains Mono, monospace" fill="#0F172A">
+        <text x="286" y="75" textAnchor="middle" fontSize="18" fontWeight="700" fontFamily="JetBrains Mono, monospace" fill="#0F172A">
           {p2.total}
         </text>
         <text x="286" y="95" textAnchor="middle" fontSize="10" fill="#475569" fontFamily="JetBrains Mono, monospace">
@@ -149,67 +150,91 @@ function CourtZoneDiagram({ rows }: { rows: ZoneBreakdownRow[] }) {
           strokeDasharray="5 3"
         />
 
-        {/* Back row: Pos 5 (Overig/2e bal reference), Pos 6 (Pipe), Pos 1 (Achterveld) */}
-        <rect
-          x="21"
-          y="115"
-          width="106"
-          height="128"
-          fill={cellFill(other.total)}
-          stroke="#E2E8F0"
-        />
-        <text x="74" y="160" textAnchor="middle" fontSize="10.5" fontWeight="600" fill="#475569">
-          Overig / 2e bal
+        {/* Back row: Pos 5 (Linksachter / Pipe), Pos 6 (Pipe midden), Pos 1 (Achterveld rechts) */}
+        <rect x="21" y="115" width="106" height="128" fill={cellFill(p5.total)} stroke="#E2E8F0" />
+        <text x="74" y="156" textAnchor="middle" fontSize="10.5" fontWeight="700" fill="#0F172A">
+          Pos 5 · Pipe/LA
         </text>
-        <text x="74" y="184" textAnchor="middle" fontSize="16" fontWeight="700" fontFamily="JetBrains Mono, monospace" fill="#0F172A">
-          {other.total}
+        <text x="74" y="182" textAnchor="middle" fontSize="18" fontWeight="700" fontFamily="JetBrains Mono, monospace" fill="#0F172A">
+          {p5.total}
         </text>
-        <text x="74" y="203" textAnchor="middle" fontSize="10" fill="#64748B" fontFamily="JetBrains Mono, monospace">
-          {formatDutchPercent(other.scorePercentage)} score
+        <text x="74" y="202" textAnchor="middle" fontSize="10" fill="#475569" fontFamily="JetBrains Mono, monospace">
+          {formatDutchPercent(p5.scorePercentage)} score
         </text>
 
-        {/* Pos 6 - Pipe */}
-        <rect
-          x="127"
-          y="115"
-          width="106"
-          height="128"
-          fill={cellFill(p6.total)}
-          stroke="#E2E8F0"
-        />
-        <text x="180" y="160" textAnchor="middle" fontSize="11" fontWeight="700" fill={cellText(p6.total)}>
-          Pipe (P6)
+        {/* Pos 6 - Pipe midden */}
+        <rect x="127" y="115" width="106" height="128" fill={cellFill(p6.total)} stroke="#E2E8F0" />
+        <text x="180" y="156" textAnchor="middle" fontSize="10.5" fontWeight="700" fill="#0F172A">
+          Pos 6 · Pipe mid
         </text>
-        <text x="180" y="184" textAnchor="middle" fontSize="18" fontWeight="700" fontFamily="JetBrains Mono, monospace" fill="#0F172A">
+        <text x="180" y="182" textAnchor="middle" fontSize="18" fontWeight="700" fontFamily="JetBrains Mono, monospace" fill="#0F172A">
           {p6.total}
         </text>
-        <text x="180" y="203" textAnchor="middle" fontSize="10" fill="#475569" fontFamily="JetBrains Mono, monospace">
+        <text x="180" y="202" textAnchor="middle" fontSize="10" fill="#475569" fontFamily="JetBrains Mono, monospace">
           {formatDutchPercent(p6.scorePercentage)} score
         </text>
 
-        {/* Pos 1 - Achterveld */}
-        <rect
-          x="233"
-          y="115"
-          width="106"
-          height="128"
-          fill={cellFill(p1.total)}
-          stroke="#E2E8F0"
-        />
-        <text x="286" y="160" textAnchor="middle" fontSize="11" fontWeight="700" fill={cellText(p1.total)}>
-          Achterveld (P1)
+        {/* Pos 1 - Achterveld rechts */}
+        <rect x="233" y="115" width="106" height="128" fill={cellFill(p1.total)} stroke="#E2E8F0" />
+        <text x="286" y="156" textAnchor="middle" fontSize="10.5" fontWeight="700" fill="#0F172A">
+          Pos 1 · Achterv.
         </text>
-        <text x="286" y="184" textAnchor="middle" fontSize="18" fontWeight="700" fontFamily="JetBrains Mono, monospace" fill="#0F172A">
+        <text x="286" y="182" textAnchor="middle" fontSize="18" fontWeight="700" fontFamily="JetBrains Mono, monospace" fill="#0F172A">
           {p1.total}
         </text>
-        <text x="286" y="203" textAnchor="middle" fontSize="10" fill="#475569" fontFamily="JetBrains Mono, monospace">
+        <text x="286" y="202" textAnchor="middle" fontSize="10" fill="#475569" fontFamily="JetBrains Mono, monospace">
           {formatDutchPercent(p1.scorePercentage)} score
         </text>
 
-        <text x="180" y="261" textAnchor="middle" fontSize="10" fill="#64748B" fontWeight="500">
-          CAMERA-PERSPECTIEF (rug van zwart/geel team)
+        <text x="180" y="262" textAnchor="middle" fontSize="10" fill="#64748B" fontWeight="500">
+          EIGEN SPEELHELFT ZWART/GEEL (net bovenaan · 3m-lijn stippellijn)
         </text>
+
+        {/* Debug mode: plot exact detected takeoff coordinates (takeoffX, takeoffY) */}
+        {debugMode &&
+          attacks
+            .filter((a) => Boolean(a.debugCoordinates))
+            .map((a) => {
+              const d = a.debugCoordinates!;
+              const cx = 21 + d.takeoffX * 318;
+              const cy = 25 + d.takeoffY * 218;
+              const fill =
+                a.outcome === 'Direct punt'
+                  ? '#15803D'
+                  : a.outcome === 'Fout'
+                  ? '#B91C1C'
+                  : a.outcome === 'Geblokt'
+                  ? '#D97706'
+                  : a.outcome === 'Kill-blok mee'
+                  ? '#0284C7'
+                  : '#334155';
+              return (
+                <circle
+                  key={a.id}
+                  cx={cx}
+                  cy={cy}
+                  r={4.5}
+                  fill={fill}
+                  stroke="#FFFFFF"
+                  strokeWidth={1.5}
+                >
+                  <title>{`${a.timestamp} · ${a.positionZone} · ${formatOutcomeLabel(a.outcome)} · x=${d.takeoffX.toFixed(2)}, y=${d.takeoffY.toFixed(2)}`}</title>
+                </circle>
+              );
+            })}
       </svg>
+
+      <div className="mt-2.5 flex items-center justify-between text-xs text-slate-600 max-w-[390px] px-1">
+        <span>Overig / 2e bal (spelverdeler)</span>
+        <span className="font-mono tabular-nums font-semibold text-slate-900">
+          {other.total} ({formatDutchPercent(other.scorePercentage)} score)
+        </span>
+      </div>
+      {debugMode && (
+        <p className="mt-1 text-[11px] text-slate-500 max-w-[390px] px-1">
+          Debug-punten op het veld tonen het exact gedetecteerde afzetpunt (x, y) per aanval.
+        </p>
+      )}
     </div>
   );
 }
@@ -219,11 +244,15 @@ export function SummarySection({
   chunks,
   verifyingId,
   isAnalyzing,
+  debugMode,
   onJumpToAttack,
   onVerifyAttack,
 }: SummarySectionProps) {
   const summary = computeAttackSummary(attacks);
   const zoneRows = computeZoneBreakdown(attacks);
+  const killBlockEvents = attacks
+    .filter((a) => a.outcome === 'Geblokt' || a.outcome === 'Kill-blok mee')
+    .sort((a, b) => a.timestampSeconds - b.timestampSeconds);
   const uncertainAttacks = attacks
     .filter((a) => a.confidence === 'Onzeker')
     .sort((a, b) => a.timestampSeconds - b.timestampSeconds);
@@ -268,10 +297,11 @@ export function SummarySection({
           </div>
 
           <div className="p-4">
-            <div className="text-xs text-slate-500 font-medium">Direct punt (Scores)</div>
+            <div className="text-xs text-slate-500 font-medium">Direct punt</div>
             <div className="text-2xl font-bold font-mono tabular-nums text-emerald-700 mt-1">
               {summary.scores}
             </div>
+            <div className="text-[11px] text-slate-400 mt-0.5">incl. blok-uit</div>
           </div>
 
           <div className="p-4">
@@ -279,13 +309,15 @@ export function SummarySection({
             <div className="text-2xl font-bold font-mono tabular-nums text-red-700 mt-1">
               {summary.errors}
             </div>
+            <div className="text-[11px] text-slate-400 mt-0.5">uit / netfout</div>
           </div>
 
           <div className="p-4">
-            <div className="text-xs text-slate-500 font-medium">Geblokt</div>
+            <div className="text-xs text-slate-500 font-medium">Kill-blok tegen</div>
             <div className="text-2xl font-bold font-mono tabular-nums text-amber-700 mt-1">
               {summary.blocked}
             </div>
+            <div className="text-[11px] text-slate-400 mt-0.5">punt tegen</div>
           </div>
 
           <div className="p-4">
@@ -317,6 +349,70 @@ export function SummarySection({
             </div>
           </div>
         </div>
+
+        {/* Dedicated Kill-blokken apart (punt voor vs. punt tegen) */}
+        <div className="border-t border-slate-200 bg-slate-50/60 px-5 py-4 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-900">
+                Kill-blokken apart — Punt vóór vs. Punt tegen
+              </h3>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Eigen kill-blokken (mee) tellen niet mee in het aanvalstotaal, zodat het aanvalsrendement zuiver blijft.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-5 text-xs font-mono tabular-nums">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-sky-700" aria-hidden="true" />
+                <span className="font-sans text-slate-600">Kill-blok mee (punt voor):</span>
+                <span className="text-base font-bold text-sky-700">{summary.killBlocksFor}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <ShieldAlert className="w-4 h-4 text-amber-700" aria-hidden="true" />
+                <span className="font-sans text-slate-600">Kill-blok tegen (punt tegen):</span>
+                <span className="text-base font-bold text-amber-700">{summary.killBlocksAgainst}</span>
+              </div>
+              <div className="flex items-center gap-2 pl-4 border-l border-slate-300">
+                <span className="font-sans text-slate-600">Blok-saldo:</span>
+                <span
+                  className={`text-base font-bold ${
+                    summary.blockBalance > 0
+                      ? 'text-emerald-700'
+                      : summary.blockBalance < 0
+                      ? 'text-red-700'
+                      : 'text-slate-800'
+                  }`}
+                >
+                  {summary.blockBalance > 0 ? `+${summary.blockBalance}` : summary.blockBalance}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {killBlockEvents.length > 0 && (
+            <div className="flex flex-wrap gap-2 pt-1">
+              {killBlockEvents.map((kb) => (
+                <button
+                  key={kb.id}
+                  type="button"
+                  onClick={() => onJumpToAttack(kb)}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md border bg-white hover:bg-slate-50 transition-colors cursor-pointer ${
+                    kb.outcome === 'Kill-blok mee'
+                      ? 'border-sky-200 text-sky-900'
+                      : 'border-amber-200 text-amber-900'
+                  }`}
+                >
+                  <Play className="w-2.5 h-2.5 fill-current" aria-hidden="true" />
+                  <span className="font-mono tabular-nums font-semibold">{kb.timestamp}</span>
+                  <span>·</span>
+                  <span>
+                    {kb.outcome === 'Kill-blok mee' ? 'Mee (+)' : 'Tegen (−)'} · {kb.positionZone}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </section>
 
       {/* Zone breakdown + Court Diagram */}
@@ -330,7 +426,7 @@ export function SummarySection({
               Verdeling per Positie/Zone
             </h3>
             <p className="text-xs text-slate-500 mt-0.5">
-              Aanvalsvolume, scores, fouten, blokken en rendement uitgesplitst per spelzone.
+              Aanvalsvolume, scores, fouten, kill-blokken tegen (−) &amp; mee (+) en rendement per spelzone.
             </p>
           </div>
 
@@ -341,7 +437,8 @@ export function SummarySection({
                 <th className="py-2 px-2 text-right">Aanv.</th>
                 <th className="py-2 px-2 text-right">Punt</th>
                 <th className="py-2 px-2 text-right">Fout</th>
-                <th className="py-2 px-2 text-right">Blok</th>
+                <th className="py-2 px-2 text-right" title="Kill-blok tegen (punt tegen)">Blok −</th>
+                <th className="py-2 px-2 text-right" title="Eigen kill-blok mee (punt voor)">Blok +</th>
                 <th className="py-2 px-2 text-right">Verd.</th>
                 <th className="py-2 px-2 text-right">Score %</th>
                 <th className="py-2 pl-2 text-right">Rendement</th>
@@ -365,6 +462,9 @@ export function SummarySection({
                   <td className="py-2.5 px-2 text-right font-mono tabular-nums text-amber-700">
                     {row.blocked}
                   </td>
+                  <td className="py-2.5 px-2 text-right font-mono tabular-nums text-sky-700">
+                    {row.killBlocksFor}
+                  </td>
                   <td className="py-2.5 px-2 text-right font-mono tabular-nums text-slate-600">
                     {row.defended}
                   </td>
@@ -381,7 +481,7 @@ export function SummarySection({
         </div>
 
         <div className="lg:col-span-5 lg:pl-6 lg:border-l lg:border-slate-200 flex justify-center lg:justify-start">
-          <CourtZoneDiagram rows={zoneRows} />
+          <CourtZoneDiagram rows={zoneRows} attacks={attacks} debugMode={debugMode} />
         </div>
       </section>
 
@@ -437,7 +537,7 @@ export function SummarySection({
                         <span className="text-slate-300" aria-hidden="true">
                           ·
                         </span>
-                        <span className="text-slate-700">{item.outcome}</span>
+                        <span className="text-slate-700">{formatOutcomeLabel(item.outcome)}</span>
                       </div>
                       <p className="text-xs text-slate-600 pl-5">
                         {item.note || 'Balcontact niet 100% zeker zichtbaar door camerahoek of balsnelheid.'}

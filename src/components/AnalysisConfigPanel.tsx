@@ -47,15 +47,15 @@ export function AnalysisConfigPanel({
   const completedCount = chunks.filter((c) => c.status === 'done').length;
   const activeCount = chunks.filter((c) => c.status === 'analyzing').length;
   const parallelWorkers =
-    config.speedMode === 'turbo' || config.fps === 1 ? 4 : 3;
+    config.speedMode === 'turbo' && config.fps === 1 ? 2 : 1;
 
   const handleSelectSpeedMode = (mode: AnalysisSpeedMode) => {
     if (mode === 'turbo') {
-      onUpdateConfig({ ...config, speedMode: 'turbo', fps: 1 });
+      onUpdateConfig({ ...config, speedMode: 'turbo', fps: 1, chunkDurationSeconds: 180 });
     } else if (mode === 'balanced') {
-      onUpdateConfig({ ...config, speedMode: 'balanced', fps: 1 });
+      onUpdateConfig({ ...config, speedMode: 'balanced', fps: 1, chunkDurationSeconds: 150 });
     } else {
-      onUpdateConfig({ ...config, speedMode: 'precise', fps: 2 });
+      onUpdateConfig({ ...config, speedMode: 'precise', fps: 2, chunkDurationSeconds: 90 });
     }
   };
 
@@ -236,6 +236,31 @@ export function AnalysisConfigPanel({
             ))}
           </div>
         </div>
+
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-xs font-medium text-slate-700">Debug-modus (coördinaten)</span>
+          <div className="flex items-center gap-1 p-0.5 bg-slate-100 rounded-md">
+            {(
+              [
+                { val: false, label: 'Uit' },
+                { val: true, label: 'Aan' },
+              ] as const
+            ).map((opt) => (
+              <button
+                key={String(opt.val)}
+                type="button"
+                onClick={() => onUpdateConfig({ ...config, debugMode: opt.val })}
+                className={`px-2.5 py-1 text-xs font-medium rounded-sm transition-colors cursor-pointer whitespace-nowrap ${
+                  config.debugMode === opt.val
+                    ? 'bg-white text-slate-900 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
       {/* Global error banner if API call fails */}
@@ -355,7 +380,7 @@ export function AnalysisConfigPanel({
           )}
         </button>
         <p className="text-[11px] text-slate-500 mt-2 leading-relaxed tabular-nums">
-          {chunks.length} blokken van ~2 min worden met {parallelWorkers} tegelijk parallel gescand. Gebruik Turbo voor de snelste scan en 4 FPS check voor twijfelgevallen.
+          {chunks.length} blokken van ~{Math.round((config.chunkDurationSeconds / 60) * 10) / 10} min (+8s uitloop voor blok/juichen/opslag; {parallelWorkers === 2 ? '2 parallelle' : '1 rustige'} scan-stroom met quotum-bescherming).
         </p>
       </div>
     </aside>

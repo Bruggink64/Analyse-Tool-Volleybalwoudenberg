@@ -6,6 +6,7 @@ import {
   AttackEvent,
   AttackOutcome,
   AttackZone,
+  formatOutcomeOptionLabel,
   formatSecondsToMMSS,
 } from '../types/scouting';
 
@@ -101,7 +102,7 @@ export function QuickTagBar({
           >
             {ATTACK_OUTCOMES.map((o) => (
               <option key={o} value={o}>
-                {o}
+                {formatOutcomeOptionLabel(o)}
               </option>
             ))}
           </select>

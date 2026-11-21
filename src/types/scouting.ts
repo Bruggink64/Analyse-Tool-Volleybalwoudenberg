@@ -2,17 +2,49 @@ export type AttackZone =
   | 'Buiten (Pos 4)'
   | 'Midden (Pos 3)'
   | 'Diagonaal (Pos 2)'
-  | 'Pipe (Pos 6)'
-  | 'Achterveld (Pos 1)'
+  | 'Achterveld links / Pipe (Pos 5)'
+  | 'Pipe midden (Pos 6)'
+  | 'Achterveld rechts (Pos 1)'
   | 'Overig / 2e bal';
 
 export type AttackOutcome =
   | 'Direct punt'
   | 'Fout'
   | 'Geblokt'
+  | 'Kill-blok mee'
   | 'Verdedigd/doorgespeeld';
 
 export type ConfidenceLevel = 'Zeker' | 'Onzeker';
+
+export type BlockContactType =
+  | 'geen-blok'
+  | 'kill-blok-tegen'
+  | 'kill-blok-mee-zwart-geel'
+  | 'blok-touch-uit-voor-zwart-geel'
+  | 'blok-verdedigd'
+  | 'onduidelijk';
+
+export type TeamSignal = 'zwart-geel' | 'tegenstander' | 'rally-door' | 'onduidelijk';
+
+export type ScoreboardCue = 'zwart-geel-omhoog' | 'tegenstander-omhoog' | 'niet-leesbaar';
+
+export interface ZoneCoordinateDebug {
+  takeoffX: number; // 0.00 (links in eigen veld) -> 1.00 (rechts in eigen veld)
+  takeoffY: number; // 0.00 (bij net) -> 0.33 (3m-lijn) -> 1.00 (achterlijn)
+  courtSide: 'nabij' | 'ver';
+  behindThreeMeterLine: boolean;
+  rawZoneLabel: string;
+  resolvedBy: 'model' | 'coordinaten-correctie';
+  reasoning: string;
+  blockContact?: BlockContactType;
+  ballLandingSide?: string;
+  celebratingTeam?: 'zwart-geel' | 'tegenstander' | 'geen-rally-door' | 'onduidelijk';
+  nextServerTeam?: 'zwart-geel' | 'tegenstander' | 'rally-door' | 'niet-zichtbaar';
+  scoreboardCue?: ScoreboardCue;
+  pointWinner?: TeamSignal;
+  rawOutcomeLabel?: string;
+  outcomeResolvedBy?: 'model' | 'uitkomst-correctie';
+}
 
 export interface AttackEvent {
   id: string;
@@ -24,6 +56,7 @@ export interface AttackEvent {
   note: string;
   source: 'ai' | 'handmatig' | 'geverifieerd';
   chunkIndex?: number;
+  debugCoordinates?: ZoneCoordinateDebug;
 }
 
 export interface AnalysisChunk {
@@ -47,14 +80,18 @@ export interface MatchConfig {
   fps: 1 | 2 | 3;
   chunkDurationSeconds: number;
   speedMode: AnalysisSpeedMode;
+  debugMode: boolean;
 }
 
 export interface AttackSummary {
-  total: number;
-  scores: number;
-  errors: number;
-  blocked: number;
+  total: number; // Totaal aantal eigen aanvallen (excl. eigen defensieve kill-blokken mee)
+  scores: number; // Direct punt (incl. blok-uit)
+  errors: number; // Fouten (uitgeslagen ballen & netfouten)
+  blocked: number; // Kill-blok tegen (punt tegen zwart/geel)
   defended: number;
+  killBlocksFor: number; // Eigen kill-blok mee (punt voor zwart/geel)
+  killBlocksAgainst: number; // Kill-blok tegen (punt tegen zwart/geel)
+  blockBalance: number; // killBlocksFor - killBlocksAgainst
   uncertainCount: number;
   scorePercentage: number | null;
   attackEfficiency: number | null;
@@ -67,6 +104,7 @@ export interface ZoneBreakdownRow {
   scores: number;
   errors: number;
   blocked: number;
+  killBlocksFor: number;
   defended: number;
   scorePercentage: number | null;
   attackEfficiency: number | null;
@@ -76,8 +114,9 @@ export const ATTACK_ZONES: AttackZone[] = [
   'Buiten (Pos 4)',
   'Midden (Pos 3)',
   'Diagonaal (Pos 2)',
-  'Pipe (Pos 6)',
-  'Achterveld (Pos 1)',
+  'Achterveld links / Pipe (Pos 5)',
+  'Pipe midden (Pos 6)',
+  'Achterveld rechts (Pos 1)',
   'Overig / 2e bal',
 ];
 
@@ -85,19 +124,56 @@ export const ATTACK_OUTCOMES: AttackOutcome[] = [
   'Direct punt',
   'Fout',
   'Geblokt',
+  'Kill-blok mee',
   'Verdedigd/doorgespeeld',
 ];
+
+export function formatOutcomeLabel(outcome: AttackOutcome): string {
+  switch (outcome) {
+    case 'Geblokt':
+      return 'Kill-blok tegen';
+    case 'Kill-blok mee':
+      return 'Kill-blok mee';
+    default:
+      return outcome;
+  }
+}
+
+export function formatOutcomeOptionLabel(outcome: AttackOutcome): string {
+  switch (outcome) {
+    case 'Direct punt':
+      return 'Direct punt (incl. blok-uit)';
+    case 'Fout':
+      return 'Fout (uit / netfout)';
+    case 'Geblokt':
+      return 'Kill-blok tegen (punt tegen)';
+    case 'Kill-blok mee':
+      return 'Kill-blok mee (punt voor)';
+    case 'Verdedigd/doorgespeeld':
+      return 'Verdedigd/doorgespeeld';
+  }
+}
+
+export const TARGET_TEAM_IDENTITY =
+  'Altijd het team in zwart/geel tenue met 1 libero in geel/zwart (ongeacht aan welke kant van het net zij spelen)';
 
 export const DEFAULT_MATCH_CONFIG: MatchConfig = {
   youtubeUrl: 'https://www.youtube.com/watch?v=qAru-EPNss4',
   startTime: '31:44',
   endTime: '53:00',
-  teamDescription:
-    'Team dat met de rug naar de camera speelt (zwart/geel tenue, met 1 libero in geel/zwart)',
+  teamDescription: TARGET_TEAM_IDENTITY,
   fps: 1,
-  chunkDurationSeconds: 120, // 2m blokken -> 11 blokken, 4 tegelijk parallel
+  chunkDurationSeconds: 150, // 2m30s blokken @ 1 FPS (~15k tokens/blok) — voorkomt 429 quotum-pieken
   speedMode: 'balanced',
+  debugMode: true,
 };
+
+export function migrateLegacyZone(zone: string): AttackZone {
+  if ((ATTACK_ZONES as string[]).includes(zone)) return zone as AttackZone;
+  if (zone === 'Pipe (Pos 6)') return 'Pipe midden (Pos 6)';
+  if (zone === 'Achterveld (Pos 1)') return 'Achterveld rechts (Pos 1)';
+  return 'Overig / 2e bal';
+}
 
 export function extractYouTubeVideoId(url: string): string | null {
   try {
@@ -191,18 +267,24 @@ export function buildChunks(
 }
 
 export function computeAttackSummary(attacks: AttackEvent[]): AttackSummary {
-  const total = attacks.length;
+  let total = 0;
   let scores = 0;
   let errors = 0;
   let blocked = 0;
   let defended = 0;
+  let killBlocksFor = 0;
   let uncertainCount = 0;
 
   for (const attack of attacks) {
-    if (attack.outcome === 'Direct punt') scores += 1;
-    else if (attack.outcome === 'Fout') errors += 1;
-    else if (attack.outcome === 'Geblokt') blocked += 1;
-    else defended += 1;
+    if (attack.outcome === 'Kill-blok mee') {
+      killBlocksFor += 1;
+    } else {
+      total += 1;
+      if (attack.outcome === 'Direct punt') scores += 1;
+      else if (attack.outcome === 'Fout') errors += 1;
+      else if (attack.outcome === 'Geblokt') blocked += 1;
+      else defended += 1;
+    }
 
     if (attack.confidence === 'Onzeker') uncertainCount += 1;
   }
@@ -217,6 +299,9 @@ export function computeAttackSummary(attacks: AttackEvent[]): AttackSummary {
     errors,
     blocked,
     defended,
+    killBlocksFor,
+    killBlocksAgainst: blocked,
+    blockBalance: killBlocksFor - blocked,
     uncertainCount,
     scorePercentage,
     attackEfficiency,
@@ -228,8 +313,9 @@ export function computeZoneBreakdown(attacks: AttackEvent[]): ZoneBreakdownRow[]
     'Buiten (Pos 4)': 'Buiten (P4)',
     'Midden (Pos 3)': 'Midden (P3)',
     'Diagonaal (Pos 2)': 'Diagonaal (P2)',
-    'Pipe (Pos 6)': 'Pipe (P6)',
-    'Achterveld (Pos 1)': 'Achterveld (P1)',
+    'Achterveld links / Pipe (Pos 5)': 'Linksachter / Pipe (P5)',
+    'Pipe midden (Pos 6)': 'Pipe midden (P6)',
+    'Achterveld rechts (Pos 1)': 'Achterveld (P1)',
     'Overig / 2e bal': 'Overig / 2e bal',
   };
 
@@ -243,6 +329,7 @@ export function computeZoneBreakdown(attacks: AttackEvent[]): ZoneBreakdownRow[]
       scores: s.scores,
       errors: s.errors,
       blocked: s.blocked,
+      killBlocksFor: s.killBlocksFor,
       defended: s.defended,
       scorePercentage: s.scorePercentage,
       attackEfficiency: s.attackEfficiency,
@@ -263,21 +350,24 @@ export function buildMarkdownReport(
 ): string {
   const sorted = [...attacks].sort((a, b) => a.timestampSeconds - b.timestampSeconds);
   const summary = computeAttackSummary(sorted);
+  const killBlocks = sorted.filter(
+    (a) => a.outcome === 'Geblokt' || a.outcome === 'Kill-blok mee'
+  );
 
   const lines: string[] = [
-    `# Aanvalsanalyse (${config.startTime} – ${config.endTime})`,
+    `# Aanvals- & Blokanalyse (${config.startTime} – ${config.endTime})`,
     '',
     `- **Video**: ${config.youtubeUrl}`,
     `- **Focus**: ${config.teamDescription}`,
     '',
-    '## 1. Tabel per aanval',
+    '## 1. Tabel per aanval & kill-blok',
     '',
     '| Tijdstip | Positie/Zone | Uitkomst | Zekerheid / Toelichting |',
     '| :--- | :--- | :--- | :--- |',
   ];
 
   if (sorted.length === 0) {
-    lines.push('| — | Nog geen aanvallen geregistreerd | — | — |');
+    lines.push('| — | Nog geen acties geregistreerd | — | — |');
   } else {
     for (const row of sorted) {
       const conf =
@@ -285,36 +375,54 @@ export function buildMarkdownReport(
           ? `Niet 100% zeker — ${row.note || 'camerahoek/snelheid'}`
           : row.note || 'Zeker';
       lines.push(
-        `| ${row.timestamp} | ${row.positionZone} | ${row.outcome} | ${conf.replace(/\|/g, '/')} |`
+        `| ${row.timestamp} | ${row.positionZone} | ${formatOutcomeOptionLabel(row.outcome)} | ${conf.replace(/\|/g, '/')} |`
       );
     }
   }
 
   lines.push(
     '',
-    '## 2. Samenvatting',
+    '## 2. Samenvatting aanvallen',
     '',
     `- **Totaal aantal aanvallen**: ${summary.total}`,
-    `- **Aantal scores (Direct punt)**: ${summary.scores}`,
-    `- **Aantal fouten**: ${summary.errors}`,
-    `- **Aantal geblokt**: ${summary.blocked}`,
+    `- **Aantal scores (Direct punt, incl. blok-uit)**: ${summary.scores}`,
+    `- **Aantal fouten (uit / netfout)**: ${summary.errors}`,
+    `- **Aantal kill-blokken tegen (Geblokt — punt tegen)**: ${summary.killBlocksAgainst}`,
     `- **Verdedigd / doorgespeeld**: ${summary.defended}`,
     `- **Scorepercentage**: ${formatDutchPercent(summary.scorePercentage)}`,
-    `- **Aanvalsrendement** *(Scores − Fouten − Geblokt) / Totaal*: ${formatDutchPercent(summary.attackEfficiency, true)}`,
+    `- **Aanvalsrendement** *(Scores − Fouten − Kill-blok tegen) / Totaal*: ${formatDutchPercent(summary.attackEfficiency, true)}`,
+    '',
+    '## 3. Kill-blokken (apart — punt vóór & punt tegen)',
+    '',
+    `- **Kill-blok mee (punt voor zwart/geel)**: ${summary.killBlocksFor}`,
+    `- **Kill-blok tegen (punt tegen zwart/geel)**: ${summary.killBlocksAgainst}`,
+    `- **Blok-saldo (mee − tegen)**: ${summary.blockBalance > 0 ? `+${summary.blockBalance}` : summary.blockBalance}`,
     ''
   );
+
+  if (killBlocks.length > 0) {
+    lines.push('| Tijdstip | Type | Positie/Zone | Toelichting |', '| :--- | :--- | :--- | :--- |');
+    for (const kb of killBlocks) {
+      lines.push(
+        `| ${kb.timestamp} | ${formatOutcomeOptionLabel(kb.outcome)} | ${kb.positionZone} | ${(kb.note || '—').replace(/\|/g, '/')} |`
+      );
+    }
+    lines.push('');
+  }
 
   const uncertainRows = sorted.filter((a) => a.confidence === 'Onzeker');
   const chunkNotes = chunks.filter((c) => c.cameraNote);
 
   if (uncertainRows.length > 0 || chunkNotes.length > 0) {
-    lines.push('## 3. Kanttekeningen over camerahoek & zichtbaarheid', '');
+    lines.push('## 4. Kanttekeningen over camerahoek & zichtbaarheid', '');
     if (uncertainRows.length > 0) {
       lines.push(
-        `Bij **${uncertainRows.length}** van de ${summary.total} aanvallen was het balcontact of de uitkomst door de camerahoek of snelheid niet met 100% zekerheid vast te stellen:`
+        `Bij **${uncertainRows.length}** acties was het balcontact of de uitkomst door de camerahoek of snelheid niet met 100% zekerheid vast te stellen:`
       );
       for (const u of uncertainRows) {
-        lines.push(`- **${u.timestamp}** (${u.positionZone}, ${u.outcome}): ${u.note || 'Onzeker balcontact'}`);
+        lines.push(
+          `- **${u.timestamp}** (${u.positionZone}, ${formatOutcomeLabel(u.outcome)}): ${u.note || 'Onzeker balcontact'}`
+        );
       }
       lines.push('');
     }
@@ -343,7 +451,7 @@ export function buildCsvReport(attacks: AttackEvent[]): string {
       a.timestamp,
       a.timestampSeconds,
       a.positionZone,
-      a.outcome,
+      formatOutcomeOptionLabel(a.outcome),
       a.confidence,
       a.note,
       a.source,
