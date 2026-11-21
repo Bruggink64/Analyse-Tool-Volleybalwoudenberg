@@ -1,0 +1,8 @@
+{
+  "name": "VolleyScout — Aanvalsanalyse",
+  "description": "Volleybal video-scouting en AI-aanvalsanalyse voor YouTube-wedstrijdfragmenten met tijdstempels, positie/zone-registratie, scorepercentage en aanvalsrendement.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
