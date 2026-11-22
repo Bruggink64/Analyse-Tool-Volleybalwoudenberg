@@ -31,7 +31,7 @@ Omdat de app een Node.js-backend (`server.ts`) gebruikt om veilig met de Gemini 
 1. Push eerst je laatste wijzigingen vanuit AI Studio naar GitHub (`Bruggink64/Analyse-Tool-Volleybalwoudenberg`).
 2. Maak een account op [render.com](https://render.com) en klik op **New → Blueprint**.
 3. Koppel `Bruggink64/Analyse-Tool-Volleybalwoudenberg` — Render herkent `render.yaml` en de `Dockerfile` automatisch.
-4. Vul bij **Environment Variables** jouw `GEMINI_API_KEY` in en klik op **Apply**.
+4. Vul bij **Environment Variables** jouw `GEMINI_API_KEY` én een zelfgekozen `APP_ACCESS_CODE` in en klik op **Apply**.
 5. Na ~2 minuten is je eigen publieke `https://....onrender.com` URL live.
 
 ### Optie C: Google Cloud Run of Railway vanuit GitHub
@@ -40,12 +40,21 @@ Omdat de app een Node.js-backend (`server.ts`) gebruikt om veilig met de Gemini 
 
 ---
 
+## Beveiliging (lees dit vóór je een publieke URL deelt)
+
+- **API-sleutel**: `GEMINI_API_KEY` staat alleen op de server (env-variabele), nooit in de browser of in git.
+- **Toegangscode**: zet `APP_ACCESS_CODE` bij de host. Zonder code kan iedereen die de link vindt video-analyses starten op jouw Gemini-quotum (en bij een betaalde sleutel op jouw rekening). Met code vraagt de app één keer om de code en onthoudt die in de browser.
+- **Limiet per IP**: standaard max. 60 analyse-aanvragen per 10 minuten per IP-adres (`RATE_LIMIT_MAX`).
+- **Model wisselen**: `GEMINI_MODEL` en `GEMINI_FAST_MODEL` overschrijven de standaardmodellen zonder codewijziging.
+
+---
+
 ## Lokaal draaien (ontwikkeling)
 
 Vereist **Node.js 22+**.
 
 ```bash
-npm install
+npm ci
 cp .env.example .env
 # Vul GEMINI_API_KEY in .env in
 npm run dev

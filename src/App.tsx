@@ -20,8 +20,30 @@ import {
   migrateLegacyZone,
   parseTimestampToSeconds,
 } from './types/scouting';
+import { postApi } from './lib/api';
 
 const STORAGE_PREFIX = 'volleyscout_v1_';
+const CONFIG_STORAGE_KEY = `${STORAGE_PREFIX}config`;
+
+function loadSavedConfig(): MatchConfig {
+  try {
+    const raw = window.localStorage.getItem(CONFIG_STORAGE_KEY);
+    if (!raw) return DEFAULT_MATCH_CONFIG;
+    const saved = JSON.parse(raw) as Partial<MatchConfig>;
+    const merged: MatchConfig = { ...DEFAULT_MATCH_CONFIG, ...saved };
+    if (
+      parseTimestampToSeconds(merged.startTime) === null ||
+      parseTimestampToSeconds(merged.endTime) === null ||
+      ![1, 2, 3].includes(merged.fps) ||
+      !['turbo', 'balanced', 'precise'].includes(merged.speedMode)
+    ) {
+      return DEFAULT_MATCH_CONFIG;
+    }
+    return merged;
+  } catch {
+    return DEFAULT_MATCH_CONFIG;
+  }
+}
 
 function storageKeyFor(config: MatchConfig): string {
   const vid = extractYouTubeVideoId(config.youtubeUrl) ?? 'custom';
@@ -169,7 +191,7 @@ function sleepWithAbort(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 export default function App() {
-  const [config, setConfig] = useState<MatchConfig>(DEFAULT_MATCH_CONFIG);
+  const [config, setConfig] = useState<MatchConfig>(loadSavedConfig);
   const videoId = useMemo(
     () => extractYouTubeVideoId(config.youtubeUrl),
     [config.youtubeUrl]
@@ -198,6 +220,19 @@ export default function App() {
 
   const playerHandleRef = useRef<VideoPlayerHandle | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  // Sleutel waarvan de gegevens nu in het geheugen staan. Voorkomt dat bij het wisselen van
+  // wedstrijd/tijdvak de oude aanvallen onder de nieuwe sleutel worden opgeslagen.
+  // (state i.p.v. ref: wordt in dezelfde render bijgewerkt als de geladen aanvallen)
+  const [loadedStorageKey, setLoadedStorageKey] = useState<string | null>(null);
+
+  // Onthoud de laatst gebruikte wedstrijd en instellingen, zodat herladen ze niet wist
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(config));
+    } catch {
+      // ignore storage errors
+    }
+  }, [config]);
 
   // Load persisted data for current video + range
   useEffect(() => {
@@ -206,6 +241,7 @@ export default function App() {
       endSeconds,
       config.chunkDurationSeconds
     );
+    setLoadedStorageKey(storageKeyFor(config));
     try {
       const savedRaw = window.localStorage.getItem(storageKeyFor(config));
       if (savedRaw) {
@@ -249,15 +285,17 @@ export default function App() {
 
   // Persist attacks & chunk results
   useEffect(() => {
+    const key = storageKeyFor(config);
+    if (key !== loadedStorageKey) return;
     try {
       window.localStorage.setItem(
-        storageKeyFor(config),
+        key,
         JSON.stringify({ attacks, chunks })
       );
     } catch {
       // ignore storage quota errors
     }
-  }, [attacks, chunks, config]);
+  }, [attacks, chunks, config, loadedStorageKey]);
 
   const analyzeChunkAt = useCallback(
     async (
@@ -273,11 +311,9 @@ export default function App() {
       );
 
       try {
-        const response = await fetch('/api/analyze-chunk', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          signal,
-          body: JSON.stringify({
+        const response = await postApi(
+          '/api/analyze-chunk',
+          {
             youtubeUrl: config.youtubeUrl,
             startSeconds: chunk.startSeconds,
             endSeconds: chunk.endSeconds,
@@ -285,8 +321,9 @@ export default function App() {
             fps: config.fps,
             speedMode: config.speedMode,
             debugMode: config.debugMode,
-          }),
-        });
+          },
+          signal
+        );
 
         const parsed = await readNdjsonResult<{
           cameraNote?: string;
@@ -567,17 +604,13 @@ export default function App() {
       setStatusNotice(null);
 
       try {
-        const res = await fetch('/api/verify-moment', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            youtubeUrl: config.youtubeUrl,
-            timestampSeconds: attack.timestampSeconds,
-            currentZone: attack.positionZone,
-            currentOutcome: attack.outcome,
-            teamDescription: config.teamDescription,
-            debugMode: config.debugMode,
-          }),
+        const res = await postApi('/api/verify-moment', {
+          youtubeUrl: config.youtubeUrl,
+          timestampSeconds: attack.timestampSeconds,
+          currentZone: attack.positionZone,
+          currentOutcome: attack.outcome,
+          teamDescription: config.teamDescription,
+          debugMode: config.debugMode,
         });
         const parsed = await readNdjsonResult<{
           isTargetTeamAttack?: boolean;
@@ -668,17 +701,13 @@ export default function App() {
           `4 FPS blok-audit bezig: ${i + 1} van ${targets.length} (${target.timestamp})…`
         );
 
-        const res = await fetch('/api/verify-moment', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            youtubeUrl: config.youtubeUrl,
-            timestampSeconds: target.timestampSeconds,
-            currentZone: target.positionZone,
-            currentOutcome: target.outcome,
-            teamDescription: config.teamDescription,
-            debugMode: config.debugMode,
-          }),
+        const res = await postApi('/api/verify-moment', {
+          youtubeUrl: config.youtubeUrl,
+          timestampSeconds: target.timestampSeconds,
+          currentZone: target.positionZone,
+          currentOutcome: target.outcome,
+          teamDescription: config.teamDescription,
+          debugMode: config.debugMode,
         });
 
         const parsed = await readNdjsonResult<{

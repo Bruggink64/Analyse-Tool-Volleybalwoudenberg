@@ -2,9 +2,9 @@ FROM node:22-slim
 
 WORKDIR /app
 
-# Install dependencies first for optimal layer caching
-COPY package.json package-lock.json* bun.lock* ./
-RUN npm install
+# Install dependencies first for optimal layer caching (exacte versies uit package-lock.json)
+COPY package.json package-lock.json ./
+RUN npm ci
 
 # Copy application source and build frontend bundle
 COPY . .

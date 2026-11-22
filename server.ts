@@ -2,14 +2,23 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { timingSafeEqual } from 'node:crypto';
 import { GoogleGenAI, MediaResolution, ThinkingLevel, Type } from '@google/genai';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT || 3000);
-const MODEL_NAME = 'gemini-4-hydrogen';
-const FAST_MODEL_NAME = 'gemini-3.1-flash-lite';
+const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-4-hydrogen';
+const FAST_MODEL_NAME = process.env.GEMINI_FAST_MODEL || 'gemini-3.1-flash-lite';
+
+// Optionele toegangscode: als APP_ACCESS_CODE is gezet, mogen alleen mensen met deze code
+// de (betaalde) Gemini-analyse starten. Zonder code kan iedereen met de publieke URL je quotum opmaken.
+const ACCESS_CODE = (process.env.APP_ACCESS_CODE || '').trim();
+
+// Eenvoudige limiet per IP-adres tegen misbruik of per ongeluk eindeloos herhalen.
+const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
+const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX || 60);
 
 const ALWAYS_TARGET_TEAM =
   'UITSLUITEND het team dat speelt in een zwart/geel tenue (zwarte shirts/broekjes met gele accenten) met 1 libero in het omgekeerde geel/zwarte tenue (geel shirt met zwarte accenten). Volg ALTIJD ditzelfde zwart/gele team, ook als teams na een setwissel van speelhelft wisselen!';
@@ -396,12 +405,17 @@ function reconcileOutcome(input: {
       };
     }
 
+    // Let op: een notitie als "geen blok" of "uit zonder blok" mag GEEN kill-blok tegen opleveren.
+    const noteMentionsBlock =
+      (noteLower.includes('blok') || noteLower.includes('block')) &&
+      !/(geen|zonder|no)[\s-]+(blok|block)/.test(noteLower) &&
+      !noteLower.includes('blok-uit') &&
+      !noteLower.includes('blok uit');
     const isBlockLoss =
       input.blockContact === 'kill-blok-tegen' ||
       bouncedOwnFloor ||
       modelOutcome === 'Geblokt' ||
-      noteLower.includes('blok') ||
-      noteLower.includes('block');
+      noteMentionsBlock;
 
     const correctedOutcome: (typeof VALID_OUTCOMES)[number] = isBlockLoss ? 'Geblokt' : 'Fout';
     const wasOverridden = modelOutcome !== correctedOutcome;
@@ -649,13 +663,70 @@ function startNdjsonStream(req: express.Request, res: express.Response): {
   return { send, close };
 }
 
+function accessCodeMatches(given: unknown): boolean {
+  if (!ACCESS_CODE) return true;
+  if (typeof given !== 'string') return false;
+  const a = Buffer.from(given.trim());
+  const b = Buffer.from(ACCESS_CODE);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+const requestLog = new Map<string, number[]>();
+
+function protectApi(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+): void {
+  if (!accessCodeMatches(req.get('x-access-code'))) {
+    res.status(401).json({
+      code: 'ACCESS_CODE',
+      error: 'Toegangscode ontbreekt of is onjuist. Vraag de code aan de beheerder.',
+    });
+    return;
+  }
+
+  const now = Date.now();
+  const key = req.ip || 'onbekend';
+  const recent = (requestLog.get(key) || []).filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
+  if (recent.length >= RATE_LIMIT_MAX) {
+    const retryAfterSeconds = Math.ceil((RATE_LIMIT_WINDOW_MS - (now - recent[0])) / 1000);
+    res.status(429).json({
+      code: 'RATE_LIMIT',
+      retryAfterSeconds,
+      error: `Te veel analyse-aanvragen achter elkaar. Probeer het over ${retryAfterSeconds}s opnieuw.`,
+    });
+    return;
+  }
+  recent.push(now);
+  requestLog.set(key, recent);
+  // Houd de map klein
+  if (requestLog.size > 500) {
+    for (const [ip, times] of requestLog) {
+      if (times.every((t) => now - t >= RATE_LIMIT_WINDOW_MS)) requestLog.delete(ip);
+    }
+  }
+  next();
+}
+
+function cleanShortLabel(raw: unknown, fallback: string): string {
+  if (typeof raw !== 'string') return fallback;
+  const cleaned = raw.replace(/[`"\n\r]/g, ' ').trim().slice(0, 60);
+  return cleaned || fallback;
+}
+
 async function createServer() {
   const app = express();
+  // Render / Cloud Run zitten achter een proxy: nodig voor het juiste IP-adres bij de limiet.
+  app.set('trust proxy', 1);
+  app.disable('x-powered-by');
   app.use(express.json({ limit: '1mb' }));
 
   app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, model: MODEL_NAME });
+    res.json({ ok: true, accessCodeRequired: Boolean(ACCESS_CODE) });
   });
+
+  app.use(['/api/analyze-chunk', '/api/verify-moment'], protectApi);
 
   app.post('/api/analyze-chunk', async (req, res) => {
     const { youtubeUrl, startSeconds, endSeconds, teamDescription, fps, speedMode, debugMode } =
@@ -1081,7 +1152,7 @@ REGEL VOOR ZEKERHEID:
     try {
       const prompt = `Inspecteer dit slow-check fragment van ${formatMMSS(clipStart)} tot ${formatMMSS(clipEnd)} op hoge framerate (4 FPS, hoge resolutie).
 VERPLICHTE TEAM-IDENTITEIT: ${ALWAYS_TARGET_TEAM}
-Rond ${formatMMSS(centerSec)} is eerder een actie geregistreerd: Positie/Zone = "${currentZone || 'onbekend'}", Uitkomst = "${currentOutcome || 'onbekend'}".
+Rond ${formatMMSS(centerSec)} is eerder een actie geregistreerd: Positie/Zone = "${cleanShortLabel(currentZone, 'onbekend')}", Uitkomst = "${cleanShortLabel(currentOutcome, 'onbekend')}".
 WAARSCHUWING: Eerdere scans maakten vaak de fout om een **kill-blok van de tegenstander** (punt tegen zwart/geel!) of een **uit/netfout** aan te zien voor een "Direct punt". Wees extreem kritisch op deze uitkomst!
 
 Controleer stap-voor-stap op 4 FPS:

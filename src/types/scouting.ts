@@ -440,7 +440,9 @@ export function buildCsvReport(attacks: AttackEvent[]): string {
   const sorted = [...attacks].sort((a, b) => a.timestampSeconds - b.timestampSeconds);
   const header = ['Tijdstip', 'Seconden', 'Positie/Zone', 'Uitkomst', 'Zekerheid', 'Notitie', 'Bron'];
   const escapeCsv = (val: string | number) => {
-    const str = String(val);
+    let str = String(val);
+    // Voorkom dat Excel een notitie die met = + - @ begint als formule uitvoert
+    if (typeof val === 'string' && /^[=+\-@]/.test(str)) str = `'${str}`;
     if (/[",;\n]/.test(str)) {
       return `"${str.replace(/"/g, '""')}"`;
     }
@@ -459,5 +461,6 @@ export function buildCsvReport(attacks: AttackEvent[]): string {
       .map(escapeCsv)
       .join(';')
   );
-  return [header.join(';'), ...rows].join('\n');
+  // BOM zodat Excel (NL) accenten zoals ë en é goed toont
+  return '\uFEFF' + [header.join(';'), ...rows].join('\r\n');
 }
